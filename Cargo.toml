@@ -5,7 +5,7 @@ authors = ["Emile Avoscan"]
 edition = "2024"
 description = "A high-performance, transactional LVM orchestration utility designed for deterministic storage provisioning."
 repository = "https://github.com/AvoscanEmile/lvq"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 
 [[bin]]
 name = "lvq"
