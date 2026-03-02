@@ -1,6 +1,6 @@
-# lvquick
+# lvq
 
-**lvquick** is a Rust-based transactional wrapper for LVM2 designed to make high-risk storage operations safe, deterministic, and auditable. It is built for scenarios where mistakes are costly, providing a structured lifecycle for every operation:
+**lvq (lvquick)** is a Rust-based transactional wrapper for LVM2 designed to make high-risk storage operations safe, deterministic, and auditable. It is built for scenarios where mistakes are costly, providing a structured lifecycle for every operation:
 
 **Plan → Verify → Confirm → Execute**
 
