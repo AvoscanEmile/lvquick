@@ -1,5 +1,6 @@
 use crate::core::Draft;
 mod provision;
+use provision::verify_provision;
 
 pub fn verify(draft: Draft) -> Result<Draft, String> {
     match draft.draft_type.as_str() {

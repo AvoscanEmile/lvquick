@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use crate::core::{Call, Filesystem, LvRequest, SizeUnit};
+use crate::core::{Call, Filesystem, LvRequest};
 
-fn plan_provision(
+pub fn plan_provision(
     pvs: Vec<PathBuf>, 
     vg_name: String, 
     pe_size: crate::core::SizeUnit, 

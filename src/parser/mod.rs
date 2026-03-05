@@ -1,6 +1,7 @@
 use std::env;
 use crate::core::Action;
 mod provision;
+use provision::parse_provision;
 
 pub fn parse() -> Result<Action, String> {
     let args: Vec<String> = env::args().collect();

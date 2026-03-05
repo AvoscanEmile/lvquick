@@ -88,6 +88,27 @@ impl FromStr for SizeUnit {
     }
 }
 
+impl SizeUnit {
+    pub fn to_bytes(&self) -> Result<u128, String> {
+        match self {
+            SizeUnit::Bytes(b)     => Ok(*b as u128),
+            SizeUnit::Sectors(s)   => Ok((*s as u128) * 512),
+            SizeUnit::Kilobytes(k) => Ok((*k as u128) * 1024),
+            SizeUnit::Megabytes(m) => Ok((*m as u128) * 1_048_576),
+            SizeUnit::Gigabytes(g) => Ok((*g as u128) * 1_073_741_824),
+            SizeUnit::Terabytes(t) => Ok((*t as u128) * 1_099_511_627_776),
+            SizeUnit::Petabytes(p) => Ok((*p as u128) * 1_125_899_906_842_624),
+            SizeUnit::Exabytes(e)  => Ok((*e as u128) * 1_152_921_504_606_846_976),
+            SizeUnit::Percentage(_, _) => Err(
+                "Cannot calculate raw bytes from a Percentage without Volume Group context.".into()
+            ),
+            SizeUnit::Extents(_) => Err(
+                "Cannot calculate raw bytes from Extents without knowing the Physical Extent (PE) size.".into()
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Filesystem {
     Xfs,
@@ -182,6 +203,7 @@ pub struct Action {
     pub auto_confirm: bool,
 }
 
+#[derive(Debug, Clone)]
 pub enum Call {
     PvCreate(PathBuf),
     VgCreate { name: String, pvs: Vec<PathBuf>, pe_size: SizeUnit },
@@ -190,11 +212,28 @@ pub enum Call {
     MkSwap(PathBuf),
     Mkdir(PathBuf),
     Mount { device: PathBuf, path: PathBuf },
-    PartitionDisk(PathBuf),
-    WipeSignatures(PathBuf),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DraftStatus {
+    Pending,
+    Done,
+    Clean,
+    Ready,
+    Dirty,
+    Invalid,
+}
+
+#[derive(Debug, Clone)]
 pub struct Draft {
+    pub auto_confirm: bool, 
     pub draft_type: String,
-    pub draft: Vec<Call>, 
+    pub draft: Vec<Call>,
+    pub status: DraftStatus, 
+}
+
+pub struct Exec {
+    pub list: Vec<String>,
+    pub auto_confirm: bool,
+    pub is_allowed: bool, 
 }
