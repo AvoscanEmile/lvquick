@@ -10,3 +10,10 @@ license = "Apache-2.0"
 [[bin]]
 name = "lvq"
 path = "src/main.rs"
+
+[dev-dependencies]
+kani-verifier = "0.67.0"
+proptest = "1.10.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

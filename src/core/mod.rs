@@ -1,20 +1,19 @@
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidPercentage(u8);                                                                                                
-
-impl ValidPercentage {                                                                                                                 
-  pub fn new(val: u8) -> Result<Self, String> {                                                                                      
-      match val {                                                                                                                    
-          1..=100 => Ok(Self(val)),                                                                                                  
-          _ => Err(format!("Percentage must be between 1 and 100, got {}%", val)),                                                   
-      }                                                                                                                              
+impl ValidPercentage {                                                                                
+    pub fn new(val: u8) -> Result<Self, String> {                                                         
+        match val {
+          1..=100 => Ok(Self(val)),                                                                           
+          _ => Err(format!("Percentage must be between 1 and 100, got {}%", val)),              
+    }                                                                                             
   }                                                                                                                                  
-                                                                                                                                     
-  pub fn get(&self) -> u8 {                                                                                                  
-      self.0                                                                                                                 
-  }                                                                                                                          
+  pub fn get(&self) -> u8 {                                                                         
+      self.0                                                                                        
+  }                                                                                                 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +23,7 @@ pub enum PercentTarget {
     Pvs,  
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SizeUnit {
     Bytes(u64),      
     Sectors(u64),
@@ -40,37 +39,69 @@ pub enum SizeUnit {
 
 impl FromStr for SizeUnit {
     type Err = String;
-
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim().to_uppercase();
-        
-        // Handle LVM percentage edge cases
-        if let Some(percent_idx) = s.find('%') {
-            let num_part = &s[..percent_idx];
-            let suffix_part = &s[percent_idx..]; // Includes the '%'
-
-            // Parse the target
-            let target = match suffix_part {
-                "%FREE" => PercentTarget::Free,
-                "%VG" => PercentTarget::Vg,
-                "%PVS" => PercentTarget::Pvs,
-                _ => return Err(format!("Unsupported percentage target: '{}'", suffix_part)),
-            };
-
-            // Parse and validate the numeric portion
-            let raw_val = num_part.parse::<u8>().map_err(|_| "Invalid percentage number".to_string())?;
-            let valid_percent = ValidPercentage::new(raw_val)?;
-
-            return Ok(SizeUnit::Percentage(valid_percent, target));
+        if s.contains('%') {
+            Self::parse_percentage(&s)
+        } else {
+            Self::parse_absolute(&s)
         }
+    }
+}
 
-        // Handle absolute sizes (Bytes, Megabytes, etc.)
+impl fmt::Display for SizeUnit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SizeUnit::Bytes(n) => write!(f, "{}B", n),
+            SizeUnit::Kilobytes(n) => write!(f, "{}K", n),
+            SizeUnit::Megabytes(n) => write!(f, "{}M", n),
+            SizeUnit::Gigabytes(n) => write!(f, "{}G", n),
+            SizeUnit::Terabytes(n) => write!(f, "{}T", n),
+            SizeUnit::Petabytes(n) => write!(f, "{}P", n),
+            SizeUnit::Exabytes(n) => write!(f, "{}E", n),
+            SizeUnit::Sectors(n) => write!(f, "{}s", n),
+            SizeUnit::Extents(n) => write!(f, "{}", n), // LVM usually treats raw numbers as extents
+            SizeUnit::Percentage(p, target) => {
+                let suffix = match target {
+                    PercentTarget::Free => "FREE",
+                    PercentTarget::Vg => "VG",
+                    PercentTarget::Pvs => "PVS",
+                };
+                write!(f, "{}%{}", p.get(), suffix)
+            }
+        }
+    }
+}
+
+impl SizeUnit {
+    fn parse_percentage(s: &str) -> Result<Self, String> {
+        let percent_idx = s.find('%').ok_or("Missing '%' in percentage string")?;
+        let num_part = &s[..percent_idx];
+        let suffix_part = &s[percent_idx..];
+
+        let target = match suffix_part {
+            "%FREE" => PercentTarget::Free,
+            "%VG"   => PercentTarget::Vg,
+            "%PVS"  => PercentTarget::Pvs,
+            _ => return Err(format!("Unsupported percentage target: '{}'", suffix_part)),
+        };
+
+        let raw_val = num_part.parse::<u8>()
+            .map_err(|_| "Invalid percentage number".to_string())?;
+        let valid_percent = ValidPercentage::new(raw_val)?;
+
+        Ok(SizeUnit::Percentage(valid_percent, target))
+    }
+
+    fn parse_absolute(s: &str) -> Result<Self, String> {
         let split_idx = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        
         if split_idx == 0 {
             return Err(format!("No numeric value found in size: '{}'", s));
         }
 
-        let val: u64 = s[..split_idx].parse().map_err(|_| "Invalid numeric value".to_string())?;
+        let val: u64 = s[..split_idx].parse()
+            .map_err(|_| "Invalid numeric value".to_string())?;
         let unit = &s[split_idx..];
 
         match unit {
@@ -80,15 +111,13 @@ impl FromStr for SizeUnit {
             "G" | "GB" => Ok(SizeUnit::Gigabytes(val)),
             "T" | "TB" => Ok(SizeUnit::Terabytes(val)),
             "P" | "PB" => Ok(SizeUnit::Petabytes(val)),
-            "EB" => Ok(SizeUnit::Exabytes(val)),
+            "E" | "EB" => Ok(SizeUnit::Exabytes(val)),
             "S" => Ok(SizeUnit::Sectors(val)),
-            "" | "E" => Ok(SizeUnit::Extents(val)),
+            "" => Ok(SizeUnit::Extents(val)),
             _ => Err(format!("Unknown size unit: '{}'", unit)),
         }
     }
-}
 
-impl SizeUnit {
     pub fn to_bytes(&self) -> Result<u128, String> {
         match self {
             SizeUnit::Bytes(b)     => Ok(*b as u128),
@@ -109,7 +138,7 @@ impl SizeUnit {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Filesystem {
     Xfs,
     Ext4,
@@ -139,12 +168,29 @@ impl FromStr for Filesystem {
     }
 }
 
+impl fmt::Display for Filesystem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Filesystem::Xfs => "xfs",
+            Filesystem::Ext4 => "ext4",
+            Filesystem::Btrfs => "btrfs",
+            Filesystem::Vfat => "vfat",
+            Filesystem::Swap => "swap",
+            Filesystem::F2FS => "f2fs",
+            Filesystem::Ntfs => "ntfs",
+            Filesystem::Exfat => "exfat",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FsMount {
     pub fs: Filesystem,
     pub mount_path: Option<PathBuf>,
 }
 
+#[derive(Debug)]
 pub struct LvRequest {
     pub name: String,
     pub size: SizeUnit,
@@ -160,32 +206,58 @@ impl FromStr for LvRequest {
         if parts.len() < 2 {
             return Err(format!("Invalid format '{}'. Min: name:size", s));
         }
-
         if parts.len() > 4 {
             return Err(format!("Invalid format '{}'. Max: name:size:fs:mount", s));
         }
 
+        // Validate Name
         let name = parts[0].to_string();
+        if name.is_empty() || name.starts_with('-') || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') {
+            return Err(format!("Invalid LV name: '{}'", name));
+        }
+
+        // Validate Structure (Mount without FS)
+        // Check if index 3 (mount) exists and is not empty while index 2 (fs) is empty
+        let fs_part = parts.get(2).unwrap_or(&"");
+        let mount_part = parts.get(3).unwrap_or(&"");
+
+        if fs_part.is_empty() && !mount_part.is_empty() {
+            return Err(format!("Provided a mountpath '{}' but no filesystem.", mount_part));
+        }
+
+        // Parse Size
         let size = SizeUnit::from_str(parts[1])?;
 
-        // We only look for a mount path if a filesystem was successfully declared.
-        let fs = if let Some(&fs_str) = parts.get(2) {
-            if !fs_str.is_empty() {
-                // FS exists: Parse it and look for the optional mount path
-                let fs_type = Filesystem::from_str(fs_str)?;
-                let mount_path = parts.get(3)
-                    .filter(|val| !val.is_empty())
-                    .map(PathBuf::from);
-
-                Some(FsMount { fs: fs_type, mount_path })
+        // Parse FS and Mount
+        let fs = if !fs_part.is_empty() {
+            let fs_type = Filesystem::from_str(fs_part)?;
+            let mount_path = if !mount_part.is_empty() {
+                Some(PathBuf::from(mount_part))
             } else {
                 None
-            }
+            };
+            Some(FsMount { fs: fs_type, mount_path })
         } else {
             None
         };
 
         Ok(LvRequest { name, size, fs })
+    }
+}
+
+impl fmt::Display for LvRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // name and size are mandatory
+        write!(f, "{}:{}", self.name, self.size)?;
+
+        // fs and mount are optional
+        if let Some(fs_mount) = &self.fs {
+            write!(f, ":{}", fs_mount.fs)?;
+            if let Some(path) = &fs_mount.mount_path {
+                write!(f, ":{}", path.display())?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -240,3 +312,9 @@ pub struct Exec {
     pub is_allowed: bool, 
     pub warnings: Vec<String>, 
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(kani)]
+mod kani_proofs;
