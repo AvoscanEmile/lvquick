@@ -1,8 +1,8 @@
 # Devlog Entry 05 — Orchestrating Deterministic Verification and the Provision Pipeline
 
-**Date:** 2026-03-05
-**Author:** Emile Avoscan
-**Target Version:** 0.1.0
+**Date:** 2026-03-05  
+**Author:** Emile Avoscan  
+**Target Version:** 0.1.0  
 
 ## Main Objective
 
