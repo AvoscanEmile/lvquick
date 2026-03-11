@@ -10,7 +10,7 @@
 
 The primary goal of this development cycle was to transform the **`LvRequest`** and its constituent types—such as **`SizeUnit`**—from isolated parsers into a **reflexive, high-assurance ingestion model**. By implementing a robust, colon-delimited parser and establishing mathematical guarantees against arithmetic overflow using **Kani formal verification**, the system now ensures total structural integrity. Through a hybrid strategy of property-based fuzzing and **reflexive round-trip testing**, the core was hardened into a **Trusted Computing Base (TCB)**, ensuring that user intent is captured without data loss before being transitioned to the provisioning planner.
 
-### Implementation
+## Implementation
 
 The implementation was executed through a series of modular refinements designed to separate string orchestration from core logic, thereby enabling targeted verification.
 
@@ -42,30 +42,30 @@ The `LvRequest` structure was implemented with an "Airtight" `FromStr` logic. A 
 
 To facilitate exhaustive round-trip testing, the `Display` trait was implemented for all core enums and structs. While these implementations are primarily utilized for verification within the test harnesses rather than the final execution path, they allow the system to prove that its internal representation can be serialized and deserialized without the loss of a single bit of information.
 
-### Challenges & Resolutions
+## Challenges & Resolutions
 
-* **Kani Reachability Failure**: Proof harnesses were initially invisible to the Kani cargo plugin.
+**Kani Reachability Failure**: Proof harnesses were initially invisible to the Kani cargo plugin.
 * **Resolution**: The `tests.rs` and `kani_proofs.rs` files were manually added to the crate's module tree in `mod.rs`, ensuring they were "reachable" during the symbolic execution analysis.
 
-* **String Unwinding in Kani**: Kani attempted to infinitely unroll loops within the Rust standard library (specifically `memchr` and UTF-8 validation) when processing symbolic strings.
+**String Unwinding in Kani**: Kani attempted to infinitely unroll loops within the Rust standard library (specifically `memchr` and UTF-8 validation) when processing symbolic strings.
 * **Resolution**: After attempting to use `#[kani::unwind]`, it was determined that formal string verification was too computationally expensive for this cycle. The strategy was pivoted to use Proptest for string parsing, while Kani was reserved for pure arithmetic verification where no unwinding is required.
 
-* **Symbolic Type Constraints**: Kani's `kani::any()` function requires the `Arbitrary` trait, which was missing from custom types.
+**Symbolic Type Constraints**: Kani's `kani::any()` function requires the `Arbitrary` trait, which was missing from custom types.
 * **Resolution**: `#[cfg_attr(kani, derive(kani::Arbitrary))]` was added to `ValidPercentage` and `PercentTarget` to allow Kani to generate symbolic instances of these types without adding overhead to the production binary.
 
-* **Non-deterministic Chaos Tests**: In Proptest, a random string generator for "junk" inputs would occasionally generate a valid string (e.g., "50%FREE"), causing intermittent assertion failures.
+**Non-deterministic Chaos Tests**: In Proptest, a random string generator for "junk" inputs would occasionally generate a valid string (e.g., "50%FREE"), causing intermittent assertion failures.
 * **Resolution**: The assertion logic was updated to be conditional; if a "chaos" string happened to be valid, the test verified it matched the expected variant rather than strictly asserting an error.
 
-* **Index Out of Bounds in Composite Parsing**: During the implementation of the `LvRequest` parser, direct indexing of the `parts` vector posed a panic risk for minimal inputs like `name:size`.
+**Index Out of Bounds in Composite Parsing**: During the implementation of the `LvRequest` parser, direct indexing of the `parts` vector posed a panic risk for minimal inputs like `name:size`.
 * **Resolution**: Defensive programming was applied using `.get()` and `unwrap_or("")` to safely handle optional segments, ensuring the parser returns a clean `Err` instead of crashing.
 
-* **Silent Data Loss in Structural Mismatches**: A concern was raised regarding the string format `name:size::/path`, where the filesystem is missing but a path is provided.
+**Silent Data Loss in Structural Mismatches**: A concern was raised regarding the string format `name:size::/path`, where the filesystem is missing but a path is provided.
 * **Resolution**: An explicit structural guardrail was added to return an error if a mount path is detected without a corresponding filesystem, enforcing "Correct-by-Construction" user intent.
 
-* **Grammar Ambiguity between E and EB**: It was discovered that the initial parser logic did not distinguish between "E" (standard LVM for Exabytes) and an empty string (standard for Extents).
+**Grammar Ambiguity between E and EB**: It was discovered that the initial parser logic did not distinguish between "E" (standard LVM for Exabytes) and an empty string (standard for Extents).
 * **Resolution**: The match arms were refactored to canonicalize both "E" and "EB" to Exabytes, reserving the empty suffix exclusively for Logical Extents.
 
-### Testing & Validation
+## Testing & Validation
 
 The suite was expanded to 13 high-assurance tests, combining different methodologies to cover the entire state space:
 
@@ -74,7 +74,7 @@ The suite was expanded to 13 high-assurance tests, combining different methodolo
 * **Structural Chaos Testing**: The `LvRequest` parser was tested against 50,000 permutations of colon-delimited strings, ensuring that "too many" or "too few" segments were caught.
 * **Reflexivity Invariants**: A reflexivity test was implemented where random `LvRequest` structs were generated, turned into strings via `Display`, and parsed back. The test confirmed that `original == from_str(original.to_string())` across 50,000 cases.
 
-### Outcomes
+## Outcomes
 
 The `core` module is now considered a **Trusted Computing Base (TCB)**. The system has shifted from a state of "probable correctness" to "proven robustness." The transformation from `LvRequest` to the `planner` can now proceed with the absolute certainty that the input data is sanitized, unambiguous, and mathematically safe.
 
