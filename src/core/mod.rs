@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::fmt;
 
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidPercentage(u8);                                                                                                
 impl ValidPercentage {                                                                                
@@ -16,6 +17,7 @@ impl ValidPercentage {
   }                                                                                                 
 }
 
+#[cfg_attr(kani, derive(kani::Arbitrary))]   
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PercentTarget {
     Free,
