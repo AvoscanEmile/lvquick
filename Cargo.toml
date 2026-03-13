@@ -11,6 +11,10 @@ license = "Apache-2.0"
 name = "lvq"
 path = "src/main.rs"
 
+[lib]
+name = "lvq"
+path = "src/main.rs"
+
 [dev-dependencies]
 kani-verifier = "0.67.0"
 proptest = "1.10.0"
