@@ -25,7 +25,7 @@ pub enum PercentTarget {
     Pvs,  
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SizeUnit {
     Bytes(u64),      
     Sectors(u64),
@@ -140,7 +140,7 @@ impl SizeUnit {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filesystem {
     Xfs,
     Ext4,
@@ -186,13 +186,13 @@ impl fmt::Display for Filesystem {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FsMount {
     pub fs: Filesystem,
     pub mount_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LvRequest {
     pub name: String,
     pub size: SizeUnit,
@@ -273,7 +273,7 @@ pub struct Action {
     pub auto_confirm: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Call {
     PvCreate(PathBuf),
     VgCreate { name: String, pvs: Vec<PathBuf>, pe_size: SizeUnit },

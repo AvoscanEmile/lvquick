@@ -12,3 +12,5 @@ pub fn verify(draft: Draft) -> Result<Draft, String> {
     }
 }
 
+#[cfg(test)]
+mod tests;
