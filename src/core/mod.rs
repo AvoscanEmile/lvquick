@@ -304,6 +304,7 @@ pub struct Draft {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug)]
 pub struct Exec {
     pub list: Vec<String>,
     pub auto_confirm: bool,

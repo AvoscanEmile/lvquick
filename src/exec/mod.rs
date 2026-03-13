@@ -75,3 +75,6 @@ pub fn apply_execution(exec: Exec) -> Result<(), String> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
