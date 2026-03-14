@@ -1,0 +1,74 @@
+name: Continuous Deployment
+
+on:
+  push:
+    tags:
+      - 'v*' 
+  workflow_dispatch: 
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 1. Standard Unit & Property Tests
+  test:
+    name: Unit & Property Tests
+    runs-on: ubuntu-latest
+    env:
+      PROPTEST_CASES: 100000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run Cargo Test
+        run: cargo test --verbose
+
+  # 2. Formal Verification with Kani
+  verification:
+    name: Kani Formal Proofs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify with Kani
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: "--tests"
+
+  # 3. Fuzzing Smoke Test
+  fuzz:
+    name: Fuzz Crash Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: Run Fuzzer
+        run: cargo +nightly fuzz run full_pipeline -- -max_total_time=600
+  # 4. The Actual Release (The "CD" part)
+  release:
+    name: Build and Publish Release
+    # CRITICAL: This line forces GitHub to wait. If ANY test fails, this job never runs.
+    needs: [test, verification, fuzz] 
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to create a GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Build Optimized Binary
+        # Compiles the final, high-performance executable
+        run: cargo build --release 
+        
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        # Only trigger the actual release creation if this was a tag push
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/release/lvq
+          generate_release_notes: true # Auto-generates notes from merged PRs!
