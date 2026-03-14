@@ -37,7 +37,7 @@ jobs:
 
   # 3. Fuzzing Smoke Test
   fuzz:
-    name: Fuzz Smoke Test (100s)
+    name: Fuzz Crash Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
