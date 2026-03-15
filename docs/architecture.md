@@ -1,474 +1,152 @@
-# lvquick Architecture
+# lvq Architecture & Internal Design
 
-## Philosophy
+This document serves as the primary architectural reference for the `lvq` project. It bridges the gap between high-level system goals and the concrete implementation details found in the `src/` directory. If you are new to the codebase, read this document sequentially to understand the flow of data and the strict boundaries between our internal modules.
 
-lvquick exists for one specific scenario:
+## High-Level Concept & Design Philosophy
 
-You are deep into a shift.
-You need to modify storage.
-You cannot afford a mistake.
+`lvquick` (`lvq`) is a Rust-based transactional wrapper for LVM2, engineered to eliminate high-risk storage mistakes. Instead of acting as a simple script that blindly executes shell commands, `lvq` operates as a deterministic state-convergence engine. It takes a desired end-state, compares it against the actual live system, and generates a precise, journaled execution plan to bridge the gap safely. 
 
-It is a transactional wrapper around LVM2 designed to eliminate ambiguity, arithmetic errors, and sequencing mistakes in high-risk storage workflows. It replaces the traditional “fire-and-forget” CLI model with a structured lifecycle:
+The architecture is explicitly designed to be extensible. While initially focused on safe volume provisioning, the foundation is built to support a full suite of complex, recoverable storage operations—such as live disk replacements, SSD caching, and data evacuation—as outlined in the project's v1.0 roadmap.
 
-**Plan → Verify → Confirm → Execute**
+**Core Design Principles:**
+* **Transactional Execution:** The system enforces a strict **Plan → Verify → Confirm → Execute** lifecycle. Every high-risk storage operation is fully journaled, ensuring deterministic execution and laying the groundwork for robust rollback capabilities on failure.
+* **Declarative Intent:** Users specify *what* they want (e.g., "A 10GB LV with XFS"), not *how* to build it.
+* **Provable Safety Over Speed:** Destructive operations (like disk formatting and shrinking) are guarded by multi-pass verification, live system state probes, and formal correctness checks.
+* **Strict Separation of Concerns:** Parsing, planning, verification, and execution are rigidly isolated modules. Data flows strictly in one direction to ensure the core logic remains completely decoupled from OS-level side effects until the final execution phase.
+* **Idempotency by Default:** Running the same `lvq` command twice must result in zero changes to the system on the second run, exiting cleanly and safely.
 
-lvquick is not a replacement for LVM2. It is not a daemon. It is not a storage orchestrator.
+## System Flow (The Data Pipeline)
 
-It is a deterministic safety layer built for production systems.
+The architecture is built around a linear data pipeline. A raw string input is progressively enriched, transformed, and verified until it becomes a secure execution plan. 
 
-It is designed for:
-
-* **Transactional integrity**: Every operation is modeled as an immutable plan before execution.
-* **Refusal over confusion**: If state is unclear or inconsistent, lvquick stops.
-* **Deterministic recovery**: Execution is journaled and resumable.
-* **Explicit responsibility**: Overrides exist (`--force -y`), but they are intentional and visible.
-* **Boring reliability**: High-risk operations become predictable and repeatable.
-
-lvquick is advisory about intent, but authoritative about transaction integrity. It does not attempt to be clever. It attempts to be correct.
-
-## Why a Wrapper Over LVM2?
-
-LVM2 is powerful and mature, but fundamentally imperative. Commands are executed directly against the system, and multi-step workflows require careful manual sequencing.
-
-The risks are typically:
-
-* Extent miscalculations
-* Incorrect resize ordering (filesystem vs LV)
-* Partial fstab updates
-* Interrupted `pvmove`
-* Inconsistent post-operation state
-
-lvquick addresses these not by replacing LVM2 internals, but by:
-
-* Parsing `lvm fullreport --reportformat json`
-* Generating an internal action plan
-* Verifying invariants before execution
-* Journaling every step
-* Validating final system state
-
-All communication with LVM2 happens via CLI-to-JSON. No C bindings are used.
-
-## Core Execution Model
-
-Every lvquick command follows a strict lifecycle.
-
-### 1. Ingestion & Validation
-
-lvquick gathers:
-
-* Full LVM snapshot via `lvm fullreport`
-* `/etc/fstab`
-* Active mount points
-* Filesystem signatures
-* Available VG space
-* Active `pvmove` states
-
-It checks for “blunder risks” such as:
-
-* Existing signatures on new PVs
-* Busy mount points
-* Insufficient free extents
-* Inconsistent fstab entries
-* Conflicts with active transaction journals
-
-If a journal exists and live system state differs from the journal’s expected intermediate state:
-
-* lvquick refuses to plan.
-* `--force` is required to proceed.
-
-### 2. Transaction Planning
-
-The planner generates an immutable:
+```mermaid
+graph TD
+    A[CLI Arguments] -->|parser| B(Action)
+    B -->|planner| C(Draft: Pending)
+    C -->|verifier: Pass 1| D{Is System Done?}
+    D -->|Yes| E[Exit 0]
+    D -->|No, Dirty| F[Exit 4: Manual Intervention]
+    D -->|No, Clean| G[verifier: Pass 2]
+    G -->|Math/Safety Fails| H[Exit 1: Invalid Draft]
+    G -->|Math/Safety Passes| I(Draft: Ready)
+    I -->|exec::provision| J(Exec: Compiled Shell)
+    J -->|User Auth/Confirm| K{Allowed?}
+    K -->|No| L[Exit 0: Aborted]
+    K -->|Yes| M[Execute & Log]
+    M -->|Post-Execution| N[verifier: Pass 1]
+    N -->|Done| O[Exit 0: Success]
 
 ```
-Vec<LvmAction>
-```
 
-This internal DSL defines every command that will be executed.
+### Type Transformations
 
-The plan is frozen once generated.
-No recalculation occurs during execution.
+1. **Raw Input:** The user provides arguments via `std::env::args()`.
+2. **`Action`:** The `parser` validates the syntax and translates the strings into a declarative `Action`.
+3. **`Draft` (Pending):** The `planner` translates the `Action` into a `Draft`, mapping the intent to an ordered list of abstract `Call` instructions.
+4. **`Draft` (Ready/Done/Dirty):** The `verifier` queries the OS to build a `SystemState` snapshot. It checks the `Draft` against this state.
+5. **`Exec`:** The `exec` module compiles the verified abstract `Call`s into raw, concrete shell commands ready for execution.
 
-The planner verifies invariants such as:
+## Core Components & Internal Representation
 
-* `LV_new_size ≥ FS_size`
-* `VG_free ≥ required_extents`
-* Cache pool ratio correctness
-* Resize ordering safety
+The `src/core/mod.rs` file defines the central vocabulary of the application. By centralizing these types, we prevent tight coupling between the independent modules.
 
-If current state already matches expected state:
+### Domain Types
 
-* The plan is empty.
-* lvquick exits successfully (idempotent no-op).
+* **`SizeUnit`:** A robust enum handling absolute sizes (Bytes to Exabytes), sector counts, extents, and relative percentages (`ValidPercentage`). It contains the critical `to_bytes()` translation logic.
+* **`Filesystem`:** An enum representing supported formats (`Xfs`, `Ext4`, `Swap`, etc.).
+* **`LvRequest`:** Represents a single logical volume configuration parsed from the `--lv` flag (e.g., `name:size:fs:mount`).
 
-### 3. Confirmation
+### The `Call` Enum (Intermediate Representation)
 
-The user is shown:
+The `Call` enum is the most important abstraction in `lvq`. It bridges user intent and shell commands. By keeping operations abstract (e.g., `Call::Mkfs { device, fs }`) during the planning and verification phases, we can reason about the system safely without worrying about shell escaping or specific binary flags.
 
-* Current State
-* Expected State
-* Execution Plan
+| Variant | Purpose |
+| --- | --- |
+| `PvCreate` | Marks a block device as a Physical Volume. |
+| `VgCreate` | Aggregates PVs into a Volume Group with a specific PE size. |
+| `LvCreate` | Carves out logical capacity from a VG. |
+| `Mkfs` | Formats a block device with a specific filesystem. |
+| `MkSwap` | Formats and activates swap space. |
+| `Mkdir` | Ensures mount point paths exist. |
+| `Mount` | Temporarily mounts a filesystem. |
+| `Fstab` | Persistently registers a mount in `/etc/fstab`. |--
 
-Default behavior requires explicit confirmation `[y/N]`.
+## The Verification Engine (The Brain)
 
-Flags:
+Located in `src/verifier/`, this module is responsible for the intelligence and safety of `lvq`. It operates in two distinct passes against a live model of the host machine.
 
-* `-y`: Skip confirmation
-* `--force`: Override journal drift refusal
+### The `SystemState` Snapshot
 
-`--force` does not skip planning or confirmation.
-It only allows proceeding when integrity boundaries are violated.
+Before validating anything, the verifier invokes external LVM and Linux utilities (`pvs`, `lsblk`, `/proc/mounts`, `/etc/fstab`) to build a `SystemState` struct. This acts as an in-memory, read-only replica of the host's current block storage configuration.
 
-`--force -y` is allowed, but explicit.
+### Pass 1: State Convergence (`verify_done`)
 
-### 4. Transaction Journal
+The engine checks how many of the proposed `Call`s already exist in the `SystemState`.
 
-Once a plan is generated, a transaction file is created at:
+* **Done:** If 100% of the required state exists, the system gracefully exits (`0`).
+* **Clean:** If 0% of the required state exists, the draft is a fresh deployment and proceeds.
+* **Dirty:** If a partial state exists (e.g., the VG exists, but the LV does not), `lvq` refuses to guess the user's intent, aborts with a `Dirty` status, and exits with code `4`.
 
-```
-/var/lib/lvq/transactions/<datetime_id>.json
-```
+### Pass 2: Feasibility & Safety (`verify_possible`)
 
-This file contains:
+If the system is `Clean`, the engine validates that the requested operations are mathematically and physically possible.
 
-* Schema version
-* Timestamp
-* Detected LVM version
-* Kernel version
-* Initial state snapshot hash
-* Immutable plan
-* Execution log (step-by-step results)
-* Transaction state
+* **Uniqueness:** Ensures no duplicate PVs or LVs are declared.
+* **Safety Checks:** Prevents formatting devices that are already referenced in `/etc/fstab` or have existing filesystem signatures. It also issues warnings if raw disks are targeted instead of partitions.
+* **Capacity Math:** Calculates total available extents based on block device sizes minus LVM metadata overhead (1MB), and proves that the requested LV allocations do not exceed physical capacity.
 
-Transaction states:
+## Execution & Translation Engine
 
-* `planned`
-* `executing`
-* `drifted`
-* `failed`
-* `completed`
-* `abandoned`
+Located in `src/exec/`, this module acts as the "compiler backend" for `lvq`. Once a `Draft` has been thoroughly verified and marked as `Ready`, this engine translates the abstract `Call` intermediate representation (IR) into an `Exec` struct containing concrete shell strings.
 
-The journal is the authoritative record of the transaction.
+### The Translation Layer (`exec::provision`)
+This step is entirely deterministic and relies heavily on the `SizeUnit::to_bytes()` logic to ensure exact disk geometry allocation. For example, a `Call::LvCreate` with a `SizeUnit::Percentage` is translated into the precise `lvcreate -l %{TARGET}` syntax.
 
-It is not temporary.
-It is durable.
+### Defensive Operations
+The execution engine is designed with defensive system administration in mind. 
+* **Safe `fstab` Appending:** Instead of blindly echoing into `/etc/fstab`, the engine creates a backup (`.bak`), writes the new entry to a temporary file (`.tmp`), dynamically resolves the block device to a `UUID` via `blkid` to guarantee persistent mounting across reboots, and finally moves the `.tmp` file into place.
+* **State Reloads:** Any mutation to `fstab` automatically queues a `systemctl daemon-reload` instruction to ensure the host `systemd` process synchronizes with the new disk state.
 
-### 5. Atomic Execution
+## Security, Authorization & Auditing
 
-Execution is:
+Because `lvq` executes destructive shell commands (like `mkfs` and `vgcreate`), security and user authorization are enforced at multiple levels in `src/main.rs` and `src/exec/mod.rs`.
 
-* Sequential
-* Deterministic
-* Plan-driven only
-* Logged step-by-step
+### Identity & Authorization Gates
+1. **Root Enforcement:** `lvq` immediately shells out to `id -u` on startup. If the caller is not `0` (root), the process exits with code `1` before parsing even begins.
+2. **The Confirmation Gate (`confirm_execution`):** Unless invoked with `-y` or `--auto-confirm`, the compiled execution plan is printed to `stdout` along with any system warnings. The user must explicitly type `Y`. 
+3. **The `is_allowed` Boundary:** The `Exec` struct contains a hardcoded `is_allowed` boolean that defaults to `false`. The `apply_execution` function strictly refuses to run if this flag has not been flipped by the authorization gate.
 
-For each `LvmAction`:
+### Forensic Auditing
+All execution loops are strictly append-only and log heavily to `/var/log/lvq`. 
+* Every command is logged with its `INTENT`.
+* If a command succeeds, it is marked `SUCCESS`.
+* The execution loop **fails fast**. If any `sh -c` invocation returns a non-zero exit code, the engine immediately logs `FAILED`, aborts the rest of the queue, and bubbles the error up.
 
-* Execute underlying command
-* Record command, args, exit code, timestamp
-* Append to journal
+## Correctness & Formal Verification
 
-If a step fails:
+Because lvq operates on destructive block storage commands, we maintain an exhaustive, multi-layered testing harness encompassing formal proofs, fuzzing, proptests, and eventually ephemeral VM E2E testing. For a deep dive into what these tests do, how to run them and where to find these tests, see docs/testing.md. I strongly encourage to go an read that file to understand the thorough approach this project takes for testing. 
 
-* Failure is classified (validation, transient, destructive, partial mutation)
-* User is offered rollback
-* Rollback is implemented as a compensating plan derived from initial state
+## Error Handling & Diagnostics
 
-Rollback is best-effort logical reversal, not guaranteed byte-identical restoration.
+`lvq` strictly avoids panicking in the wild. All internal modules communicate failures by bubbling up `Result<T, String>`, allowing `main.rs` to control the standard error output (`eprintln!`) and exit gracefully.
 
-### 6. Post-Condition Verification
+### Standardized Exit Codes
+Scripts consuming `lvq` can rely on strict POSIX-style exit codes to determine the system's state:
+* `0` **(Success):** The system successfully converged, *or* it was already in the `Done` state and no changes were required.
+* `1` **(General Error):** Used for non-root access, malformed CLI parsing, invalid capacity math, or a hard failure during the shell execution loop.
+* `4` **(Dirty State):** A critical architectural exit code. Returned if the Verifier detects a partial/fractured LVM state prior to execution, *or* if the post-execution state verification fails to match the original `Draft`. Requires manual sysadmin intervention.
 
-After all actions execute:
+## OS Boundaries & External Dependencies
 
-* lvquick performs a fresh ingestion
-* Compares actual state with expected state
+`lvq` does not implement LVM via raw kernel syscalls; it relies on the host's userspace tools. For `lvq` to operate, the target machine must have the following binaries available in the system `$PATH`:
 
-A transaction is considered complete only when:
+* **LVM2 Suite:** `pvs`, `vgs`, `lvs`, `pvcreate`, `vgcreate`, `lvcreate`
+* **Block Devices & Mounts:** `lsblk`, `blkid`, `mount`, `mkdir`
+* **Filesystems:** `mkfs` (and target-specific helpers like `mkfs.xfs`, `mkfs.ext4`), `mkswap`, `swapon`
+* **System utilities:** `sh`, `cp`, `mv`, `echo`, `id`, `systemctl`
 
-Expected State == Actual State
+## Historical Context & Decisions
 
-Command success alone is insufficient.
+The reasoning behind major architectural pivots and design constraints is documented chronologically in the `devlogs/` directory. Rather than bloating this architecture document, refer to the devlogs for historical context:
 
-If mismatch exists, the transaction is marked `failed`.
-
-## Drift and Integrity Boundaries
-
-During the planification phase a system state hash is stored by the program, right before execution this hash is recalculated to verify it matches. If live system state conflicts with a transaction journal:
-
-Default behavior:
-
-* Refuse to act
-* Mark transaction as `drifted` (From initial state). 
-
-With `--force`:
-
-* Re-ingest
-* Display detected drift
-* Ask confirmation
-* Proceed using journal as authoritative
-
-lvquick assumes you are not simultaneously running raw LVM2 commands and lvquick, nor two or more lvquick commands at the same time. However, it verifies post-conditions to guard against drift.
-
-Integrity is prioritized over convenience.
-
-## Command Suite
-
-lvquick focuses exclusively on operations that are:
-
-• Multi-step  
-• Arithmetic-sensitive   
-• Order-dependent  
-• Operationally dangerous under fatigue   
-
-These are the workflows that cause real outages — not because LVM2 is flawed, but because humans are.
-
-Each command below is implemented as a deterministic plan generator. It expands a high-level intent into a fully validated, journaled, ordered execution plan.
-
-### `provision`
-
-**Workflow:**
-Partitioning (if needed) → PV → VG → LV → Filesystem → Mount → fstab entry
-
-This is the “from raw disk to mounted storage” path.
-
-It takes an uninitialized block device and turns it into a fully usable, persistent filesystem in one transactional operation. Internally, it:
-
-• Verifies no conflicting signatures exist  
-• Initializes the Physical Volume  
-• Creates or extends the Volume Group  
-• Allocates a Logical Volume with validated extent math  
-• Formats the filesystem (with safe defaults)  
-• Generates a UUID-based `/etc/fstab` entry  
-• Mounts and verifies accessibility  
-• UUID resolution instead of device paths  
-• Safe mount options chosen automatically  
-• Atomic fstab modification  
-• Post-condition verification of mount + FS  
-
-This eliminates the “it worked until reboot” class of errors.
-
-### `decommission`
-
-**Workflow:**
-Unmount → Remove fstab → Remove LV → Remove VG (optional) → Remove PV
-
-This is the controlled teardown path.
-
-It safely dismantles storage while ensuring no ghost references remain. It:
-
-• Verifies mount state  
-• Cleanly unmounts  
-• Removes fstab entries before destructive operations  
-• Deletes LV/VG/PV in dependency order  
-• Validates no dangling references remain  
-• Guarantees `/etc/fstab` consistency, preventing emergency shell drops at boot  
-
-This command prevents the “forgot the fstab line” outage that only appears on the next restart.
-
-### `replace-disk`
-
-**Workflow:**
-Add new PV → Extend VG → `pvmove` → Reduce old PV → Remove old PV
-
-This handles live disk replacement inside a Volume Group.
-
-Internally, it:
-
-• Verifies the VG can temporarily span both disks  
-• Adds the replacement PV  
-• Initiates and monitors `pvmove`  
-• Journals long-running move state  
-• Validates full extent migration  
-• Safely removes the old PV  
-• Manages long-running `pvmove` transactions safely and resumably  
-
-This turns a high-anxiety maintenance window operation into a deterministic workflow.
-
-### `accelerate`
-
-**Workflow:**
-Create cache-pool → Calculate metadata size → Attach cache → Verify mode
-
-This enables SSD caching for HDD-backed logical volumes.
-
-The difficult part of LVM caching is not the command — it is the metadata sizing math and ratio correctness. It:
-
-• Calculates correct cache pool sizing  
-• Determines appropriate metadata LV size  
-• Verifies SSD capacity constraints  
-• Attaches cache in the desired mode (writeback/writethrough)  
-• Validates final cache status  
-• Eliminates human error in SSD-to-HDD ratio math  
-
-This removes the “why did my cache pool explode?” class of mistakes.
-
-### `shrink`
-
-**Workflow:**
-Filesystem Resize → Logical Volume Reduce
-
-Shrinking is dangerous because ordering matters.
-
-If LV is reduced before the filesystem, data loss occurs.
-
-It enforces:
-
-• Filesystem minimum size detection  
-• Strict ordering: FS first, LV second  
-• Verified size invariants before execution  
-• Post-operation validation  
-• Proven invariant: LV_size ≥ FS_size at all times  
-
-The shrink command refuses to proceed if the relationship cannot be guaranteed.
-
-### `shrink-xfs`
-
-**Workflow:**
-Create new LV → Format → Copy data → Update fstab → Swap mount → Delete old LV
-
-XFS does not support in-place shrinking.
-
-Instead of telling the user “you can’t,” lvquick automates the canonical workaround:
-
-• Creates a correctly sized new LV  
-• Formats it  
-• Copies data safely  
-• Verifies data integrity  
-• Atomically updates mount references  
-• Removes the original LV  
-• Converts a multi-hour manual migration into a single atomic plan  
-
-This is not a shortcut — it is a structured migration with rollback boundaries.
-
-### `snap-back`
-
-**Workflow:**
-Freeze → Snapshot → Unfreeze → Mount snapshot (optional)
-
-This command creates application-consistent snapshots.
-
-Internally, it:
-
-• Detects filesystem type  
-• Freezes the filesystem  
-• Creates LVM snapshot  
-• Unfreezes safely  
-• Optionally mounts snapshot read-only  
-• Ensures snapshot consistency for databases and active workloads  
-
-It prevents “crash-consistent but logically corrupt” backups.
-
-### `evacuate`
-
-**Workflow:**
-Verify free space → `pvmove` extents → Reduce PV → Validate VG
-
-This removes a disk from a VG without replacing it.
-
-Internatlly it:
-
-• Calculates required free extents in remaining PVs  
-• Refuses to proceed if space is insufficient  
-• Moves extents deterministically  
-• Validates full migration before PV reduction  
-• Guarantees the VG can absorb the data before moving anything  
-
-This avoids mid-operation “out of space during pvmove” failures.
-
-## Why Only These Eight?
-
-lvquick does not aim to wrap every LVM command.
-
-It targets operations where:
-
-• The sequence matters  
-• The math matters  
-• The fatigue matters  
-• The consequences matter  
-
-Each command is opinionated, validated, journaled, and post-verified.
-
-No shortcuts.
-No hidden behavior.
-No silent assumptions.
-
-Only deterministic storage transitions.
-
-## Internal Action Model
-
-`LvmAction` is the core abstraction.
-
-Each action defines:
-
-* Underlying command and arguments
-* Idempotent flag
-* Destructive flag
-* Reversible flag
-* Verification logic
-
-All execution behavior derives from this model.
-
-It is the architectural kernel of lvquick.
-
-## fstab Safety Model
-
-Modifications to `/etc/fstab` use a:
-
-Temp → Sync → Atomic Rename
-
-pattern to prevent partial writes and boot failures.
-
-fstab changes are included in the transaction journal.
-
-## Idempotency
-
-If the system already matches the declared intent:
-
-* No actions are generated.
-* Exit code 0.
-* No mutation occurs.
-
-Idempotency is intentional and foundational for future automation integration.
-
-## Exit Code Discipline
-
-Planned exit categories:
-
-* 0 — Success / No-op
-* 1 — Validation failure
-* 2 — Reversible execution failure
-* 3 — Non-reversible execution failure
-* 4 — Drift detected
-
-This supports future Ansible integration and machine-readable automation.
-
-## Design Constraints
-
-* Single statically linked Rust binary
-* No runtime dependencies beyond LVM2
-* Targeted at RHEL 10+, but usable across any system relying on LVM2. 
-* Air-gapped compatible
-* No daemon
-* No distributed locking
-* No hidden retries
-
-lvquick must be predictable, explicit, and transparent.
-
-## Long-Term Direction
-
-Potential expansions:
-
-* Structured JSON plan output
-* `lvq continue`, `lvq repair`, `lvq history`
-* Snapshot hash enforcement
-* Enhanced failure classification
-* Capability detection per LVM version
-* Ansible plugin
-
-All future features must preserve:
-
-* Immutable plan model
-* Journaled execution
-* Refusal on ambiguity
-* Post-condition verification
+* *Refer to `devlogs/devlog-01.md` through `devlog-14.md` for context on early parsing decisions, the migration to the multi-pass verification model, and the introduction of formal Kani proofs.*

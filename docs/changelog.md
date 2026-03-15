@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * `Cargo.toml` and `Cargo.lock` for Rust package and dependency management.
 * `README.md` for the project overview.
 * `LICENSE` for the project's licensing terms.
-* The `docs/` directory, including `architecture.md`, `changelog.md` (this file), and `roadmap.md`.
-* The `devlogs/` directory, containing 14 development log entries (`devlog-01.md` through `devlog-14.md`).
+* The `docs/` directory, including `architecture.md`, `changelog.md` (this file), `roadmap.md` and `testing.md`.
+* The `devlogs/` directory, containing 15 development log entries (`devlog-01.md` through `devlog-15.md`).
 * The `fuzz` folder.
 * `src/main.rs` and `src/lib.rs` as the primary application and library entry points.
 * `src/core/` module, including `mod.rs`, `tests.rs`, and `kani_proofs.rs`.
